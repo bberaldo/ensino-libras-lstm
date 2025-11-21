@@ -569,33 +569,21 @@ class LibrasFasesGUI(tk.Tk):
                 self.lbl_status.config(text=f"Falha ao iniciar MediaPipe: {e}")
                 return
 
-        if self.holistic is None:
-            try:
-                self.holistic = mp_holistic.Holistic(
-                    static_image_mode=False,
-                    model_complexity=1,
-                    enable_segmentation=False,
-                    refine_face_landmarks=False,
-                    min_detection_confidence=0.5,
-                    min_tracking_confidence=0.5
-                )
-                print("[MP] Holistic criado", flush=True)
-            except Exception as e:
-                traceback.print_exc()
-                self.lbl_status.config(text=f"Falha ao iniciar MediaPipe: {e}")
-                return
-
         print("[CAM] abrindo webcam (MSMF)...", flush=True)
-        self.cap = cv2.VideoCapture(0, cv2.CAP_MSMF)
-        if (not self.cap) or (not self.cap.isOpened()):
-            print("[CAM] MSMF falhou, tentando DSHOW...", flush=True)
-            self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-        if (not self.cap) or (not self.cap.isOpened()):
-            self.lbl_status.config(text="Não foi possível abrir a webcam.")
-            self.cap = None
-            print("[CAM] webcam NÃO abriu", flush=True)
-        else:
-            print("[CAM] webcam aberta", flush=True)
+        try:
+            self.cap = cv2.VideoCapture(0, cv2.CAP_MSMF)
+            if (not self.cap) or (not self.cap.isOpened()):
+                print("[CAM] MSMF falhou, tentando DSHOW...", flush=True)
+                self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+            if (not self.cap) or (not self.cap.isOpened()):
+                self.lbl_status.config(text="Não foi possível abrir a webcam.")
+                self.cap = None
+                print("[CAM] webcam NÃO abriu", flush=True)
+            else:
+                print("[CAM] webcam aberta", flush=True)
+        except Exception as e:
+            print(f"[ERROR] Exceção ao abrir webcam: {e}", flush=True)
+            traceback.print_exc()
 
     def stop_camera(self):
         try:
@@ -614,127 +602,131 @@ class LibrasFasesGUI(tk.Tk):
         self.after(10, self.main_loop)
 
     def detect_loop(self):
-        if not self.cap:
-            return
-        ret, frame = self.cap.read()
-        if not ret:
-            self.lbl_status.config(text="Sem vídeo da câmera.")
-            return
-
-        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img_rgb.flags.writeable = False
         try:
-            results = self.holistic.process(img_rgb)
-        except Exception as e:
-            traceback.print_exc()
-            self.lbl_status.config(text=f"Falha no MediaPipe: {e}")
-            return
-        img_rgb.flags.writeable = True
+            if not self.cap:
+                return
+            ret, frame = self.cap.read()
+            if not ret:
+                self.lbl_status.config(text="Sem vídeo da câmera.")
+                return
 
-        num_lm = count_landmarks(results)
-        feat1662 = extract_features_holistic(results, frame.shape)
-        feat144 = apply_keep_idx_feat(feat1662)
-        self.seq_buf.append(feat144)
+            img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img_rgb.flags.writeable = False
+            try:
+                results = self.holistic.process(img_rgb)
+            except Exception as e:
+                traceback.print_exc()
+                self.lbl_status.config(text=f"Falha no MediaPipe: {e}")
+                return
+            img_rgb.flags.writeable = True
 
-        pred_text = "Observando..."
-        color = (0, 200, 0)
-        target_lbl = self.current_target()
+            num_lm = count_landmarks(results)
+            feat1662 = extract_features_holistic(results)
+            feat144 = apply_keep_idx_feat(feat1662)
+            self.seq_buf.append(feat144)
 
-        no_hands = (num_lm < MIN_LANDMARKS)
-        if len(self.seq_buf) >= MOTION_MIN_FRAMES:
-            still = (motion_energy_last(self.seq_buf, k=MOTION_MIN_FRAMES) < MOTION_EPS)
-        else:
-            still = False
+            pred_text = "Observando..."
+            color = (0, 200, 0)
+            target_lbl = self.current_target()
 
-        if no_hands:
-            self.smoother.clear()
-            self.target_streak = 0
-            pred_text = "Entre na câmera"
-            color = (0, 200, 255)
-            self.lbl_status.config(text="Entre na câmera: posicione ao menos 1 mão visível.")
-        elif still:
-            self.smoother.clear()
-            self.target_streak = 0
-            pred_text = "Parado"
-            color = (0, 200, 255)
-            if target_lbl:
-                self.lbl_status.config(text=f"Mova a mão para reconhecer '{target_lbl}'.")
-        elif len(self.seq_buf) >= SEQLEN:
-            seq_arr = np.stack(self.seq_buf, axis=0).astype(np.float32)
-            x_in = np.expand_dims(seq_arr[-SEQLEN:], axis=0)
-            probs = self.model.predict(x_in, verbose=0)[0]
-            avg, cls, conf = self.smoother.push(probs)
+            no_hands = (num_lm < MIN_LANDMARKS)
+            if len(self.seq_buf) >= MOTION_MIN_FRAMES:
+                still = (motion_energy_last(self.seq_buf, k=MOTION_MIN_FRAMES) < MOTION_EPS)
+            else:
+                still = False
 
-            if target_lbl is not None:
-                try:
-                    target_idx = int(np.where(self.classes == target_lbl)[0][0])
-                except Exception:
-                    target_idx = None
-                p_target = float(avg[target_idx]) if target_idx is not None else 0.0
+            if no_hands:
+                self.smoother.clear()
+                self.target_streak = 0
+                pred_text = "Entre na câmera"
+                color = (0, 200, 255)
+                self.lbl_status.config(text="Entre na câmera: posicione ao menos 1 mão visível.")
+            elif still:
+                self.smoother.clear()
+                self.target_streak = 0
+                pred_text = "Parado"
+                color = (0, 200, 255)
+                if target_lbl:
+                    self.lbl_status.config(text=f"Mova a mão para reconhecer '{target_lbl}'.")
+            elif len(self.seq_buf) >= SEQLEN:
+                seq_arr = np.stack(self.seq_buf, axis=0).astype(np.float32)
+                x_in = np.expand_dims(seq_arr[-SEQLEN:], axis=0)
+                probs = self.model.predict(x_in, verbose=0)[0]
+                avg, cls, conf = self.smoother.push(probs)
 
-                if p_target >= TARGET_ACCEPT:
-                    self.target_streak += 1
-                else:
-                    self.target_streak = 0
+                if target_lbl is not None:
+                    try:
+                        target_idx = int(np.where(self.classes == target_lbl)[0][0])
+                    except Exception:
+                        target_idx = None
+                    p_target = float(avg[target_idx]) if target_idx is not None else 0.0
 
-                if self.target_streak >= TARGET_STREAK:
-                    pred_text = f"{target_lbl}  {p_target*100:.1f}%"
-                    color = (0, 255, 0)
-                    self.lbl_status.config(text=f"Boa! Reconhecido: {target_lbl}")
-                    self.target_streak = 0
-                    self.smoother.clear()
-                    self.step_idx += 1
-                    if self.step_idx >= len(self.current_phase()["sequence"]):
-                        self.show_state("DONE")
-                        return
-                    self.update_phase_labels()
+                    if p_target >= TARGET_ACCEPT:
+                        self.target_streak += 1
+                    else:
+                        self.target_streak = 0
+
+                    if self.target_streak >= TARGET_STREAK:
+                        pred_text = f"{target_lbl}  {p_target*100:.1f}%"
+                        color = (0, 255, 0)
+                        self.lbl_status.config(text=f"Boa! Reconhecido: {target_lbl}")
+                        self.target_streak = 0
+                        self.smoother.clear()
+                        self.step_idx += 1
+                        if self.step_idx >= len(self.current_phase()["sequence"]):
+                            self.show_state("DONE")
+                            return
+                        self.update_phase_labels()
+                    else:
+                        if should_abstain(avg, conf_thresh=CONF_THRESH):
+                            pred_text = "Analisando..."
+                            color = (0, 200, 255)
+                            if target_lbl:
+                                self.lbl_status.config(text=f"Mantenha '{target_lbl}' por um instante.")
+                        else:
+                            label = str(self.classes[cls])
+                            pred_text = f"{label}  {conf*100:.1f}%"
+                            color = (0, 255, 0)
+                            if target_lbl:
+                                self.lbl_status.config(text=f"Faça o gesto: {target_lbl}")
                 else:
                     if should_abstain(avg, conf_thresh=CONF_THRESH):
-                        pred_text = "Analisando..."
+                        pred_text = "Aguardando…"
                         color = (0, 200, 255)
-                        if target_lbl:
-                            self.lbl_status.config(text=f"Mantenha '{target_lbl}' por um instante.")
                     else:
                         label = str(self.classes[cls])
                         pred_text = f"{label}  {conf*100:.1f}%"
                         color = (0, 255, 0)
-                        if target_lbl:
-                            self.lbl_status.config(text=f"Faça o gesto: {target_lbl}")
             else:
-                if should_abstain(avg, conf_thresh=CONF_THRESH):
-                    pred_text = "Aguardando…"
-                    color = (0, 200, 255)
-                else:
-                    label = str(self.classes[cls])
-                    pred_text = f"{label}  {conf*100:.1f}%"
-                    color = (0, 255, 0)
-        else:
+                if target_lbl:
+                    self.lbl_status.config(text=f"Coletando… alvo: {target_lbl}")
+
+            base = frame.copy()
+            h, w = base.shape[:2]
+
+            hud = base.copy()
+            cv2.rectangle(hud, (10, 10), (w - 10, 60), (0, 0, 0), -1)
+            alpha = 0.6
+            frame_hud = cv2.addWeighted(hud, alpha, base, 1 - alpha, 0)
+
+            # --- Texto com UNICODE via Pillow ---
+            frame_hud = self.draw_text_unicode(frame_hud, pred_text, (20, 20), font_size=32, color=color)
+
             if target_lbl:
-                self.lbl_status.config(text=f"Coletando… alvo: {target_lbl}")
+                frame_hud = self.draw_text_unicode(frame_hud, f"Alvo: {target_lbl}", (20, 60), font_size=24, color=(255,255,255))
+            
+            y_dbg = 120
+            scale = 0.6
+            dbg_color = (200, 200, 200)
+            cv2.putText(frame_hud, f"LM={num_lm} (min {MIN_LANDMARKS})", (20, y_dbg), cv2.FONT_HERSHEY_SIMPLEX, scale, dbg_color, 1, cv2.LINE_AA); y_dbg += 20
+            # cv2.putText(frame_hud, f"motion={motion_energy(self.seq_buf):.2e} (eps={MOTION_EPS:.1e})", (20, y_dbg), cv2.FONT_HERSHEY_SIMPLEX, scale, dbg_color, 1, cv2.LINE_AA); y_dbg += 20
 
-        base = frame.copy()
-        h, w = base.shape[:2]
-
-        hud = base.copy()
-        cv2.rectangle(hud, (10, 10), (w - 10, 60), (0, 0, 0), -1)
-        alpha = 0.6
-        frame_hud = cv2.addWeighted(hud, alpha, base, 1 - alpha, 0)
-
-        # --- Texto com UNICODE via Pillow ---
-        frame_hud = self.draw_text_unicode(frame_hud, pred_text, (20, 20), font_size=32, color=color)
-
-        if target_lbl:
-            frame_hud = self.draw_text_unicode(frame_hud, f"Alvo: {target_lbl}", (20, 60), font_size=24, color=(255,255,255))
-        
-        y_dbg = 120
-        scale = 0.6
-        dbg_color = (200, 200, 200)
-        cv2.putText(frame_hud, f"LM={num_lm} (min {MIN_LANDMARKS})", (20, y_dbg), cv2.FONT_HERSHEY_SIMPLEX, scale, dbg_color, 1, cv2.LINE_AA); y_dbg += 20
-        # cv2.putText(frame_hud, f"motion={motion_energy(self.seq_buf):.2e} (eps={MOTION_EPS:.1e})", (20, y_dbg), cv2.FONT_HERSHEY_SIMPLEX, scale, dbg_color, 1, cv2.LINE_AA); y_dbg += 20
-
-        disp = self._letterbox(frame_hud, self.video_w_target)
-        self._render_on_label(self.video_label, disp)
-
+            disp = self._letterbox(frame_hud, self.video_w_target)
+            self._render_on_label(self.video_label, disp)
+        except Exception as e:
+            print(f"[ERROR] Exceção no detect_loop: {e}", flush=True)
+            traceback.print_exc()
+            self.lbl_status.config(text=f"Erro na detecção: {e}")
 
     # ------- util de render -------
     def _letterbox(self, img, target_w):
