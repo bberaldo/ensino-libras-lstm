@@ -290,20 +290,47 @@ class LibrasFasesGUI(tk.Tk):
         )
         self.hint_label.pack(pady=(10,12))
 
-        self.btn_ready = ttk.Button(self.intro_center, text="Estou pronto", command=self.start_detect)
-        self.btn_ready.pack()
+        style = ttk.Style()
+        style.configure('Ready.TButton', font=('Arial', 14, 'bold'), padding=15)
+        
+        self.btn_ready = ttk.Button(
+            self.intro_center, 
+            text="✓ Estou pronto", 
+            command=self.start_detect,
+            style='Ready.TButton'
+        )
+        self.btn_ready.pack(pady=10)
 
         # --- DETECT ---
         self.video_label = tk.Label(self.frame_detect, bg="black")
         self.video_label.place(relx=0.5, rely=0.5, anchor="center")
 
         self.controls_detect = ttk.Frame(self.frame_detect)
-        self.controls_detect.pack(side="bottom", pady=10)
-        ttk.Button(self.controls_detect, text="Reiniciar fase", command=self.reset_phase).pack(side="left", padx=4)
-        # ttk.Button(self.controls_detect, text="Fase anterior", command=self.prev_phase).pack(side="left", padx=4)
-        self.btn_prev_phase = ttk.Button(self.controls_detect, text="Fase anterior", command=self.prev_phase)
-        self.btn_prev_phase.pack(side="left", padx=4)
-        ttk.Button(self.controls_detect, text="Voltar à introdução", command=self.back_to_intro).pack(side="left", padx=4)
+        self.controls_detect.pack(side="bottom", pady=20)
+        style = ttk.Style()
+        style.configure('Large.TButton', font=('Arial', 11), padding=10)
+        
+        ttk.Button(
+            self.controls_detect, 
+            text="🔄 Reiniciar fase", 
+            command=self.reset_phase,
+            style='Large.TButton'
+        ).pack(side="left", padx=8)
+        
+        self.btn_prev_phase = ttk.Button(
+            self.controls_detect, 
+            text="⬅ Fase anterior", 
+            command=self.prev_phase,
+            style='Large.TButton'
+        )
+        self.btn_prev_phase.pack(side="left", padx=8)
+        
+        ttk.Button(
+            self.controls_detect, 
+            text="🏠 Voltar à introdução", 
+            command=self.back_to_intro,
+            style='Large.TButton'
+        ).pack(side="left", padx=8)
 
         # --- DONE ---
         self.done_center = ttk.Frame(self.frame_done)
@@ -317,9 +344,30 @@ class LibrasFasesGUI(tk.Tk):
 
         btns = ttk.Frame(self.done_center)
         btns.pack()
-        ttk.Button(btns, text="Repetir esta fase", command=self.reset_phase).pack(side="left", padx=6)
-        ttk.Button(btns, text="Próxima fase", command=self.next_phase).pack(side="left", padx=6)
-        ttk.Button(btns, text="Sair", command=self.on_close).pack(side="left", padx=6)
+        
+        style = ttk.Style()
+        style.configure('Action.TButton', font=('Arial', 12), padding=12)
+        
+        ttk.Button(
+            btns, 
+            text="🔁 Repetir esta fase", 
+            command=self.reset_phase,
+            style='Action.TButton'
+        ).pack(side="left", padx=10)
+        
+        ttk.Button(
+            btns, 
+            text="➡ Próxima fase", 
+            command=self.next_phase,
+            style='Action.TButton'
+        ).pack(side="left", padx=10)
+        
+        ttk.Button(
+            btns, 
+            text="❌ Sair", 
+            command=self.on_close,
+            style='Action.TButton'
+        ).pack(side="left", padx=10)
 
         # --- SUCCESS ---
         self.frame_final = ttk.Frame(self.container)
@@ -347,8 +395,23 @@ class LibrasFasesGUI(tk.Tk):
         
         final_btns = ttk.Frame(self.final_center)
         final_btns.pack()
-        ttk.Button(final_btns, text="Recomeçar do início", command=self.restart_course).pack(side="left", padx=6)
-        ttk.Button(final_btns, text="Sair", command=self.on_close).pack(side="left", padx=6)
+        
+        style = ttk.Style()
+        style.configure('Final.TButton', font=('Arial', 13, 'bold'), padding=15)
+        
+        ttk.Button(
+            final_btns, 
+            text="🔄 Recomeçar do início", 
+            command=self.restart_course,
+            style='Final.TButton'
+        ).pack(side="left", padx=12)
+        
+        ttk.Button(
+            final_btns, 
+            text="👋 Sair", 
+            command=self.on_close,
+            style='Final.TButton'
+        ).pack(side="left", padx=12)
 
         # vídeo didático player (INTRO)
         self.tutorial_cap = None
@@ -674,9 +737,15 @@ class LibrasFasesGUI(tk.Tk):
                         self.smoother.clear()
                         self.step_idx += 1
                         if self.step_idx >= len(self.current_phase()["sequence"]):
-                            self.show_state("DONE")
+                            if self.phase_idx >= len(self.phases) - 1:
+                                # Última fase concluída - vai direto para FINAL
+                                self.show_state("FINAL")
+                            else:
+                                # Fases anteriores - vai para DONE
+                                self.show_state("DONE")
                             return
                         self.update_phase_labels()
+
                     else:
                         if should_abstain(avg, conf_thresh=CONF_THRESH):
                             pred_text = "Analisando..."
@@ -713,7 +782,35 @@ class LibrasFasesGUI(tk.Tk):
             frame_hud = self.draw_text_unicode(frame_hud, pred_text, (20, 20), font_size=32, color=color)
 
             if target_lbl:
-                frame_hud = self.draw_text_unicode(frame_hud, f"Alvo: {target_lbl}", (20, 60), font_size=24, color=(255,255,255))
+                text_alvo = f"Alvo: {target_lbl}"
+                # Estimar tamanho do texto (aproximado)
+                font_path = self._pick_font_path()
+                if font_path:
+                    from PIL import ImageFont
+                    font = ImageFont.truetype(font_path, 24)
+                    # Usar pillow para medir
+                    from PIL import Image, ImageDraw
+                    dummy = Image.new('RGB', (1, 1))
+                    draw = ImageDraw.Draw(dummy)
+                    bbox = draw.textbbox((0, 0), text_alvo, font=font)
+                    text_width = bbox[2] - bbox[0]
+                    text_height = bbox[3] - bbox[1]
+                else:
+                    # Fallback: estimativa manual
+                    text_width = len(text_alvo) * 14
+                    text_height = 24
+                
+                # Desenhar retângulo escuro semitransparente
+                overlay = frame_hud.copy()
+                padding = 8
+                cv2.rectangle(overlay, 
+                            (20 - padding, 70 - padding), 
+                            (20 + text_width + padding, 70 + text_height + padding), 
+                            (0, 0, 0), -1)
+                frame_hud = cv2.addWeighted(overlay, 0.7, frame_hud, 0.3, 0)
+                
+                # Agora desenhar o texto por cima
+                frame_hud = self.draw_text_unicode(frame_hud, text_alvo, (20, 60), font_size=24, color=(255,255,255))
             
             y_dbg = 120
             scale = 0.6
