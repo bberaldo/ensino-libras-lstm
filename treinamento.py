@@ -206,6 +206,7 @@ print("Distribuição total:", dict(zip(cls_all, cnt_all)))
 # ========================
 # LSTM
 # ========================
+# Divisão estratificada: mantém proporção de classes em treino e teste
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=0.2, stratify=labels, random_state=42
 )
@@ -225,92 +226,160 @@ X_test  = X_test.astype("float32")
 y_train = y_train.astype("float32")
 y_test  = y_test.astype("float32")
 
+# Arquitetura do modelo
 model = Sequential()
-# LSTMs com regularização
-model.add(Input(shape=(30, X.shape[-1]))) # (T=30, D=144)
-model.add(LSTM(
-    64, return_sequences=True, activation='tanh',
-    dropout=0.2,               # zera 20% das ativações (regulariza)
-    recurrent_dropout=0.2,     # zera 20% do estado recorrente
-    kernel_regularizer=regularizers.l2(1e-4)
-))
-model.add(LSTM(
-    128, return_sequences=True, activation='tanh',
-    dropout=0.2, recurrent_dropout=0.2,
-    kernel_regularizer=regularizers.l2(1e-4)
-))
-model.add(LSTM(
-    64, return_sequences=False, activation='tanh',
-    dropout=0.2, recurrent_dropout=0.2,
-    kernel_regularizer=regularizers.l2(1e-4)
-))
-# Camadas densas com L2 + Dropout
-model.add(Dense(64, activation='tanh',
-                kernel_regularizer=regularizers.l2(1e-4)))
-model.add(Dropout(0.3))
-model.add(Dense(32, activation='tanh',
-                kernel_regularizer=regularizers.l2(1e-4)))
-model.add(Dropout(0.3))
-model.add(Dense(num_classes, activation='softmax'))
 
-# otimizador AdamW
+# Camada de entrada: define o formato dos dados (30 timesteps, 144 features)
+model.add(Input(shape=(30, X.shape[-1]))) # (T=30, D=144)
+
+# Primeira camada LSTM
+model.add(LSTM(
+    64,                            # units: 64 neurônios LSTM (captura padrões temporais básicos)
+    return_sequences=True,         # True: retorna saída para CADA timestep (necessário para empilhar LSTMs)
+    activation='tanh',             # tanh: função de ativação padrão em LSTMs, intervalo [-1, 1]
+    dropout=0.2,                   # 20% das conexões de entrada zeradas aleatoriamente (previne overfitting)
+    recurrent_dropout=0.2,         # 20% das conexões recorrentes (entre estados) zeradas (regularização temporal)
+    kernel_regularizer=regularizers.l2(1e-4)  # Penalização L2: adiciona 0.0001*Σ(peso²) à loss (força pesos menores)
+))
+
+# Segunda camada LSTM
+model.add(LSTM(
+    128,                           # 128 neurônios: DOBRO da primeira camada (captura padrões mais complexos)
+    return_sequences=True,         # Ainda precisa retornar sequências para a próxima LSTM
+    activation='tanh',             # Mantém tanh para consistência
+    dropout=0.2,                   # Mesma taxa de dropout (20%) para regularização uniforme
+    recurrent_dropout=0.2,         # Dropout recorrente mantido em 20%
+    kernel_regularizer=regularizers.l2(1e-4)  # Mesma regularização L2
+))
+
+# Terceira camada LSTM
+model.add(LSTM(
+    64,                            # Volta para 64 neurônios (compressão antes das camadas densas)
+    return_sequences=False,        # FALSE: retorna APENAS o último timestep (colapsa dimensão temporal)
+                                   # Saída: (batch, 64) ao invés de (batch, 30, 64)
+                                   # Necessário pois Dense não aceita sequências temporais
+    activation='tanh',             # tanh mantida
+    dropout=0.2,                   # Dropout 20%
+    recurrent_dropout=0.2,         # Dropout recorrente 20%
+    kernel_regularizer=regularizers.l2(1e-4)  # Regularização L2
+))
+
+# Camadas densas com L2 + Dropout
+
+# Primeira camada densa: 64 neurônios totalmente conectados
+model.add(Dense(
+    64,                            # 64 neurônios (processa representação agregada da sequência)
+    activation='tanh',             # tanh: consistência com LSTMs
+    kernel_regularizer=regularizers.l2(1e-4)  # Regularização L2 nos pesos
+))
+model.add(Dropout(0.3))            # Dropout 30% (maior que LSTMs pois Dense tende a overfitting)
+
+# Segunda camada densa: 32 neurônios (redução/gargalo)
+model.add(Dense(
+    32,                            # 32 neurônios (força representação compacta)
+    activation='tanh',             # tanh mantida
+    kernel_regularizer=regularizers.l2(1e-4)  # Regularização L2
+))
+model.add(Dropout(0.3))            # Dropout 30%
+
+# Camada de saída
+model.add(Dense(
+    num_classes,                   # 11 neurônios (um por classe de gesto)
+    activation='softmax'           # softmax: converte em probabilidades que somam 1.0
+))                                 # Exemplo saída: [0.05, 0.82, 0.03, ...] → classe 1 = 82%
+
+# AdamW: versão moderna do Adam com weight decay correto
 optimizer = tf.keras.optimizers.AdamW(
-    learning_rate=1e-3,
-    weight_decay=1e-4,
-    clipnorm=1.0
+    learning_rate=1e-3,            # 0.001: taxa de aprendizado (tamanho do passo na descida do gradiente)
+    weight_decay=1e-4,             # 0.0001: decaimento de pesos (similar a L2 mas aplicado diretamente)
+    clipnorm=1.0                   # Limita norma do gradiente a 1.0 (previne gradientes explosivos em LSTMs)
 )
 
+# Compilação do Modelo
 model.compile(
     optimizer=optimizer,
-    loss=CategoricalCrossentropy(label_smoothing=0.05), # <= suaviza os rótulos
-    metrics=['categorical_accuracy']
+    loss=CategoricalCrossentropy(label_smoothing=0.05),  # label_smoothing: suaviza rótulos [0,1,0] → [0.005,0.985,0.005]
+                                                          # Previne overconfidence e melhora calibração
+    metrics=['categorical_accuracy']  # Métrica: acurácia categórica (% de predições corretas)
 )
 model.summary()
 
+# Callbacks de treinamento
 os.makedirs("checkpoints", exist_ok=True)
 
+# Callback 1: Salva pesos do modelo com MENOR validation loss
 cp_best_val_loss = ModelCheckpoint(
     filepath=os.path.join("checkpoints", f"best_val_loss{modelSuffix}.weights.h5"),
-    monitor="val_loss", mode="min",
-    save_best_only=True, save_weights_only=True, verbose=1
+    monitor="val_loss",            # monitora loss de validação
+    mode="min",                    # salva quando diminui
+    save_best_only=True,           # salva APENAS se melhorar
+    save_weights_only=True,        # salva só pesos (não arquitetura)
+    verbose=1                      # imprime quando salvar
 )
+
+# Callback 2: Salva pesos do modelo com MAIOR validation accuracy
 cp_best_val_acc = ModelCheckpoint(
     filepath=os.path.join("checkpoints", f"best_val_acc{modelSuffix}.weights.h5"),
-    monitor="val_categorical_accuracy", mode="max",
-    save_best_only=True, save_weights_only=True, verbose=1
+    monitor="val_categorical_accuracy",  # monitora acurácia de validação
+    mode="max",                    # salva quando aumenta
+    save_best_only=True,           # salva APENAS se melhorar
+    save_weights_only=True,        # salva só pesos
+    verbose=1
 )
+
+# Callback 3: Para treinamento se não houver melhoria
 early_stopping = EarlyStopping(
-    monitor="val_loss", patience=20, restore_best_weights=True, verbose=1
+    monitor="val_loss",            # monitora loss de validação
+    patience=20,                   # espera 20 épocas SEM melhoria antes de parar
+    restore_best_weights=True,     # ao parar, volta aos MELHORES pesos encontrados
+    verbose=1
 )
+
+# Callback 4: Reduz learning rate quando estagnar
 reduce_lr = ReduceLROnPlateau(
-    monitor="val_loss", factor=0.5, patience=8, min_lr=1e-5, verbose=1
+    monitor="val_loss",            # monitora loss de validação
+    factor=0.5,                    # multiplica LR por 0.5 (reduz pela metade)
+    patience=8,                    # espera 8 épocas sem melhoria antes de reduzir
+    min_lr=1e-5,                   # LR mínimo: 0.00001 (não reduz abaixo disso)
+    verbose=1
 )
+
+# Callback 5: TensorBoard para visualização de métricas
 log_dir = os.path.join('Logs')
 tb_callback = TensorBoard(log_dir=log_dir)
 
+# Treinamento do modelo
 history = model.fit(
-    X_train, y_train,
-    validation_data=(X_test, y_test),
-    epochs=1500,
-    batch_size=16,
+    X_train, y_train,              # dados de treinamento
+    validation_data=(X_test, y_test),  # dados de validação (avalia a cada época)
+    epochs=1500,                   # máximo de 1500 épocas (EarlyStopping geralmente para antes)
+    batch_size=16,                 # processa 16 amostras por vez antes de atualizar pesos
+                                   # Menor batch = mais ruído, pode escapar de mínimos locais
+                                   # Maior batch = mais estável mas menos exploração
     callbacks=[cp_best_val_loss, cp_best_val_acc, early_stopping, reduce_lr, tb_callback],
-    shuffle=True
+    shuffle=True                   # embaralha ordem dos dados a cada época (evita aprender ordem)
 )
 
 model.summary()
 
-# salva o arquivo keras
+# Salva modelo completo (arquitetura + pesos) no formato Keras
 model.save(f"checkpoints/final_model{modelSuffix}.keras")
 
 # ==========================
-# MÉTRICAS
+# AVALIAÇÃO E MÉTRICAS
 # ==========================
 
+# Predições no conjunto de teste
 y_pred = model.predict(X_test, verbose=0)
-y_hat  = y_pred.argmax(1)
+y_hat  = y_pred.argmax(1)  # converte probabilidades em classe predita
+
+# Relatório de classificação: precision, recall, F1-score por classe
 print(classification_report(y_test.argmax(1), y_hat, target_names=list(actions), digits=4))
+
+# Matriz de confusão: linhas=real, colunas=predito
 print("matriz de confusão:", confusion_matrix(y_test.argmax(1), y_hat))
 
+# Teste de sanidade: treina com rótulos embaralhados (deve ter acurácia ~9% = aleatória)
 y_shuf = np.random.permutation(y_train)
 model_shuf = tf.keras.models.clone_model(model); model_shuf.build((None,30,X.shape[-1]))
 model_shuf.compile(optimizer='adam', loss=tf.keras.losses.CategoricalCrossentropy(label_smoothing=0.05),
@@ -318,6 +387,7 @@ model_shuf.compile(optimizer='adam', loss=tf.keras.losses.CategoricalCrossentrop
 model_shuf.fit(X_train, y_shuf, epochs=3, batch_size=16, verbose=0)
 print("model evaluate", model_shuf.evaluate(X_test, y_test, verbose=0))
 
+# Converte predições para classes
 yhat = model.predict(X_test)
 ytrue = np.argmax(y_test, axis=1).tolist()
 yhat = np.argmax(yhat, axis=1).tolist()
@@ -325,10 +395,13 @@ yhat = np.argmax(yhat, axis=1).tolist()
 y_pred = model.predict(X_test, verbose=0)
 y_hat  = y_pred.argmax(1)
 
+# Relatório detalhado de classificação
 print("classification report", classification_report(y_test_cls, y_hat, target_names=list(actions), digits=4))
 
+# Matriz de confusão
 print("matriz de confusão", confusion_matrix(y_test_cls, y_hat))
 
+# Acurácia geral
 print('accuracy score', accuracy_score(ytrue, yhat))
 
 # testando
@@ -336,11 +409,11 @@ sample = []
 gesture = 'dia'
 seq_id = '29'
 for f in range(30):
-    full = np.load(os.path.join(DATA_PATH, gesture, seq_id, f"{f}.npy"))  # (1662,)
-    reduced = full[keep_idx].astype(np.float32)                            # (144,)
+    full = np.load(os.path.join(DATA_PATH, gesture, seq_id, f"{f}.npy"))  # carrega frame completo (1662 features)
+    reduced = full[keep_idx].astype(np.float32)                            # reduz para 144 features
     sample.append(reduced)
-arr = np.array(sample, dtype=np.float32)                                   # (30,144)
+arr = np.array(sample, dtype=np.float32)                                   # (30, 144)
 
-x = np.expand_dims(arr, 0)                                                 # (1,30,144)
-res = model.predict(x, verbose=0)[0]
+x = np.expand_dims(arr, 0)                                                 # (1, 30, 144) - adiciona dimensão batch
+res = model.predict(x, verbose=0)[0]                                       # prediz probabilidades
 print("Esperado:", gesture, "| Predito:", actions[np.argmax(res)], "| Conf:", float(res.max()))
